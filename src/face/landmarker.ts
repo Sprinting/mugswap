@@ -17,7 +17,12 @@ export function getLandmarker(): Promise<FaceLandmarker> {
 
 async function create(): Promise<FaceLandmarker> {
   // WASM + model are served from our own origin (see scripts/copy-mediapipe-wasm.mjs).
-  const fileset = await FilesetResolver.forVisionTasks(`${BASE}mediapipe/wasm`);
+  // VITE_WASM_LOADER_URL lets a build load the small loader script from a CDN while the
+  // .wasm binary is still served locally (used for the claude.ai preview build).
+  const loader = import.meta.env.VITE_WASM_LOADER_URL as string | undefined;
+  const fileset = loader
+    ? { wasmLoaderPath: loader, wasmBinaryPath: `${BASE}mediapipe/wasm/vision_wasm_internal.wasm` }
+    : await FilesetResolver.forVisionTasks(`${BASE}mediapipe/wasm`);
   const opts = (delegate: "GPU" | "CPU") => ({
     baseOptions: { modelAssetPath: `${BASE}models/face_landmarker.task`, delegate },
     runningMode: "IMAGE" as const,

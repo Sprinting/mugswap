@@ -1,0 +1,26 @@
+:root { --bg:#fafaf7; --fg:#1b1b1f; --muted:#6b6b75; --accent:#ff4f7b; --card:#fff; --line:#e6e6e0; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg:#121214; --fg:#ededf0; --muted:#9a9aa5; --card:#1b1b1f; --line:#2c2c33; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+h1 { margin:0; font-size: 2.2rem; letter-spacing:-0.03em; }
+.tag { margin: 4px 0 24px; color: var(--muted); }
+section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
+h2 { margin:0 0 12px; font-size:1.1rem; display:flex; gap:8px; align-items:center; }
+h2 span { display:inline grid; place-items:center; width:24px; height:24px; border-radius:50%; background:var(--accent); color:#fff; font-size:.8rem; }
+.row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.btn { appearance:none; border:0; border-radius:999px; padding:8px 16px; font:inherit; font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+.btn.ghost { background:transparent; color:var(--fg); box-shadow: inset 0 0 0 1.5px var(--line); }
+.btn:disabled { opacity:.5; cursor:default; }
+.hint { color:var(--muted); font-size:.9rem; }
+canvas, video { display:block; max-width:100%; max-height:60vh; margin-top:12px; border-radius:10px; background:#000; }
+.mirror { transform: scaleX(-1); }
+.msg { margin:8px 0 0; min-height:1.5em; }
+.msg.error { color:#e5484d; font-weight:600; }
+#progress { margin-top:12px; position:relative; height:24px; border-radius:999px; background:var(--line); overflow:hidden; }
+#bar { height:100%; width:0; background:var(--accent); transition: width .1s; }
+#progress-text { position:absolute; inset:0; display:grid; place-items:center; font-size:.8rem; font-weight:600; }
+#player { margin-top:8px; }
+#scrub { flex:1; min-width:120px; accent-color: var(--accent); }
+footer { color:var(--muted); font-size:.85rem; text-align:center; margin-top:24px; }

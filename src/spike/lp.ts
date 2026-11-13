@@ -17,7 +17,10 @@ import ortWasmMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?u
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 
 // Threads need cross-origin isolation (COOP/COEP headers, set in vite.config.ts).
-ort.env.wasm.numThreads = crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+// Override with ?threads=N in the page URL (?threads=1 = single-threaded, the most compatible).
+const wanted = Number(new URLSearchParams(location.search).get("threads")) || Math.min(8, navigator.hardwareConcurrency || 4);
+ort.env.wasm.numThreads = crossOriginIsolated ? wanted : 1;
+export const wasmThreads = ort.env.wasm.numThreads;
 ort.env.wasm.wasmPaths = { mjs: ortWasmMjsUrl, wasm: ortWasmUrl };
 if (ort.env.webgpu) ort.env.webgpu.powerPreference = "high-performance";
 
@@ -50,12 +53,13 @@ export type Quality = "preview" | "quality";
 const CACHE = "mugswap-models-v1";
 
 /** Download (or read from Cache Storage) one model, reporting bytes as they arrive. */
-async function fetchModel(key: ModelKey, onBytes: (n: number) => void): Promise<Uint8Array> {
+async function fetchModel(key: ModelKey, onBytes: (n: number, label: string) => void): Promise<Uint8Array> {
   const cache = await caches.open(CACHE).catch(() => null);
   const chunks: Uint8Array[] = [];
   for (const part of FILES[key].parts) {
     const url = part.startsWith("https://") ? part : BASE + part;
     let res = (await cache?.match(url)) ?? null;
+    const label = res ? "reading cache" : "downloading";
     if (!res) {
       const net = await fetch(url);
       if (!net.ok) throw new Error(`Download failed for ${part}: HTTP ${net.status}`);
@@ -67,7 +71,7 @@ async function fetchModel(key: ModelKey, onBytes: (n: number) => void): Promise<
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
-      onBytes(value.byteLength);
+      onBytes(value.byteLength, label);
     }
   }
   const total = chunks.reduce((n, c) => n + c.byteLength, 0);
@@ -104,12 +108,15 @@ export async function loadSessions(quality: Quality, backend: Backend, onProgres
   let loaded = 0;
   const s: Partial<Record<ModelKey, ort.InferenceSession>> = {};
   for (const k of keys) {
-    const bytes = await fetchModel(k, (n) => { loaded += n; onProgress(loaded, total, `downloading ${k}`); });
-    onProgress(loaded, total, `initialising ${k}`);
+    const bytes = await fetchModel(k, (n, how) => { loaded += n; onProgress(loaded, total, `${how} ${k}`); });
+    const ep = backend === "gpu" && k === quality ? "WebGPU" : `CPU, ${ort.env.wasm.numThreads} thread(s)`;
+    onProgress(loaded, total, `starting ${k} on ${ep}`);
+    console.log(`[spike] creating session ${k} (${ep})`);
     // The generator is conv-heavy; NHWC is the faster layout for ORT's WebGPU kernels.
-    const ep = backend === "gpu" && k === quality ? { name: "webgpu", preferredLayout: "NHWC" } : "wasm";
-    const opts: ort.InferenceSession.SessionOptions = { executionProviders: [ep as never], graphOptimizationLevel: "all" };
+    const provider = backend === "gpu" && k === quality ? { name: "webgpu", preferredLayout: "NHWC" } : "wasm";
+    const opts: ort.InferenceSession.SessionOptions = { executionProviders: [provider as never], graphOptimizationLevel: "all" };
     s[k] = await ort.InferenceSession.create(bytes, opts);
+    console.log(`[spike] session ${k} ready`);
   }
   return {
     appearance: s.appearance!, motion: s.motion!, stitching: s.stitching!,

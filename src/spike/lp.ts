@@ -22,6 +22,7 @@ import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url
 const wanted = Number(new URLSearchParams(location.search).get("threads")) || 1;
 ort.env.wasm.numThreads = crossOriginIsolated ? wanted : 1;
 export const wasmThreads = ort.env.wasm.numThreads;
+const strict = new URLSearchParams(location.search).get("strict") === "1";
 ort.env.wasm.wasmPaths = { mjs: ortWasmMjsUrl, wasm: ortWasmUrl };
 if (ort.env.webgpu) ort.env.webgpu.powerPreference = "high-performance";
 
@@ -116,6 +117,9 @@ export async function loadSessions(quality: Quality, backend: Backend, onProgres
     // The generator is conv-heavy; NHWC is the faster layout for ORT's WebGPU kernels.
     const provider = backend === "gpu" && k === quality ? { name: "webgpu", preferredLayout: "NHWC" } : "wasm";
     const opts: ort.InferenceSession.SessionOptions = { executionProviders: [provider as never], graphOptimizationLevel: "all" };
+    // ?strict=1: refuse to silently run unsupported ops on the CPU. Session creation then
+    // fails with the list of nodes WebGPU can't run, which is what we want to see.
+    if (strict && provider !== "wasm") opts.extra = { session: { disable_cpu_ep_fallback: "1" } };
     s[k] = await ort.InferenceSession.create(bytes, opts);
     console.log(`[spike] session ${k} ready`);
   }

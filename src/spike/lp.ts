@@ -16,12 +16,15 @@ import * as ort from "onnxruntime-web/webgpu";
 import ortWasmMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 
-ort.env.wasm.numThreads = 1; // no COOP/COEP headers, so no wasm threads
+// Threads need cross-origin isolation (COOP/COEP headers, set in vite.config.ts).
+ort.env.wasm.numThreads = crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
 ort.env.wasm.wasmPaths = { mjs: ortWasmMjsUrl, wasm: ortWasmUrl };
 if (ort.env.webgpu) ort.env.webgpu.powerPreference = "high-performance";
 
 const BASE =
   "https://huggingface.co/haixin/timeline-studio-onnx-models/resolve/a201b681c8f96672b5c3f624e32d4dc932f150af/liveportrait-webgpu/";
+// Plain fp32 exports of the warping module + SPADE generator, for the CPU (wasm) fallback.
+const CPU_BASE = "https://huggingface.co/dyicnc/Live-Portrait-ONNX/resolve/e6c5d2407593a39f29c92ffd5ea3eaf5e59d52a1/";
 
 const FILES = {
   appearance: { parts: ["liveportrait-appearance_feature_extractor.onnx"], bytes: 3_355_896 },
@@ -38,6 +41,8 @@ const FILES = {
     parts: ["aa", "ab", "ac", "ad", "ae"].map((p) => `liveportrait-generator-quality-fp16.onnx.part-${p}?v=1b4630bf`),
     bytes: 210_713_678,
   },
+  cpuWarping: { parts: [CPU_BASE + "warping.onnx"], bytes: 182_274_422 },
+  cpuSpade: { parts: [CPU_BASE + "spade_generator.onnx"], bytes: 221_924_849 },
 } as const;
 type ModelKey = keyof typeof FILES;
 
@@ -49,7 +54,7 @@ async function fetchModel(key: ModelKey, onBytes: (n: number) => void): Promise<
   const cache = await caches.open(CACHE).catch(() => null);
   const chunks: Uint8Array[] = [];
   for (const part of FILES[key].parts) {
-    const url = BASE + part;
+    const url = part.startsWith("https://") ? part : BASE + part;
     let res = (await cache?.match(url)) ?? null;
     if (!res) {
       const net = await fetch(url);
@@ -76,13 +81,25 @@ export interface Sessions {
   appearance: ort.InferenceSession;
   motion: ort.InferenceSession;
   stitching: ort.InferenceSession;
-  generator: ort.InferenceSession;
+  generator?: ort.InferenceSession; // GPU path: warp + render fused in one fp16 model
+  warping?: ort.InferenceSession; // CPU path: separate fp32 warp...
+  spade?: ort.InferenceSession; // ...and renderer
   size: number; // generator output size in px
+  backend: Backend;
 }
 
-export async function loadSessions(quality: Quality, onProgress: (loaded: number, total: number, label: string) => void): Promise<Sessions> {
-  if (!("gpu" in navigator)) throw new Error("WebGPU isn't available in this browser. Try desktop Chrome.");
-  const keys: ModelKey[] = ["appearance", "motion", "stitching", quality];
+/**
+ * "gpu": only the heavy generator runs on WebGPU; the small encoders and MLP run
+ *        on the CPU so the GPU holds one big model, not three.
+ * "cpu": everything on the CPU (wasm). Very slow, but shows the quality on
+ *        machines where WebGPU falls over.
+ */
+export type Backend = "gpu" | "cpu";
+
+export async function loadSessions(quality: Quality, backend: Backend, onProgress: (loaded: number, total: number, label: string) => void): Promise<Sessions> {
+  if (backend === "gpu" && !("gpu" in navigator)) throw new Error("WebGPU isn't available in this browser. Try desktop Chrome, or pick the CPU backend.");
+  const heavy: ModelKey[] = backend === "gpu" ? [quality] : ["cpuWarping", "cpuSpade"];
+  const keys: ModelKey[] = ["appearance", "motion", "stitching", ...heavy];
   const total = keys.reduce((n, k) => n + FILES[k].bytes, 0);
   let loaded = 0;
   const s: Partial<Record<ModelKey, ort.InferenceSession>> = {};
@@ -90,16 +107,20 @@ export async function loadSessions(quality: Quality, onProgress: (loaded: number
     const bytes = await fetchModel(k, (n) => { loaded += n; onProgress(loaded, total, `downloading ${k}`); });
     onProgress(loaded, total, `initialising ${k}`);
     // The generator is conv-heavy; NHWC is the faster layout for ORT's WebGPU kernels.
-    const ep = k === quality ? { name: "webgpu", preferredLayout: "NHWC" } : "webgpu";
+    const ep = backend === "gpu" && k === quality ? { name: "webgpu", preferredLayout: "NHWC" } : "wasm";
     const opts: ort.InferenceSession.SessionOptions = { executionProviders: [ep as never], graphOptimizationLevel: "all" };
-    // Keep the 3D feature volume on the GPU; it's only ever fed back into the generator.
-    if (k === "appearance") opts.preferredOutputLocation = { output: "gpu-buffer" };
     s[k] = await ort.InferenceSession.create(bytes, opts);
   }
   return {
-    appearance: s.appearance!, motion: s.motion!, stitching: s.stitching!, generator: s[quality]!,
-    size: quality === "quality" ? 512 : 256,
+    appearance: s.appearance!, motion: s.motion!, stitching: s.stitching!,
+    generator: s[quality], warping: s.cpuWarping, spade: s.cpuSpade,
+    size: backend === "cpu" ? 512 : quality === "quality" ? 512 : 256,
+    backend,
   };
+}
+
+export async function release(s: Sessions) {
+  for (const x of [s.appearance, s.motion, s.stitching, s.generator, s.warping, s.spade]) await x?.release().catch(() => {});
 }
 
 // ---------- motion math ----------
@@ -193,13 +214,21 @@ export async function stitch(sess: Sessions, src: Float32Array, drv: Float32Arra
 }
 
 export async function appearance(sess: Sessions, img: ort.Tensor): Promise<ort.Tensor> {
-  return (await sess.appearance.run({ img })).output;
+  const r = await sess.appearance.run({ img });
+  return r[sess.appearance.outputNames[0]];
 }
 
 /** Returns an RGBA ImageData of the animated crop. */
 export async function generate(sess: Sessions, feature: ort.Tensor, src: Float32Array, drv: Float32Array): Promise<ImageData> {
-  const r = await sess.generator.run({ feature_3d: feature, kp_source: tensor(src, [1, 21, 3]), kp_driving: tensor(drv, [1, 21, 3]) });
-  const out = r.out;
+  const feeds = { feature_3d: feature, kp_source: tensor(src, [1, 21, 3]), kp_driving: tensor(drv, [1, 21, 3]) };
+  let out: ort.Tensor;
+  if (sess.generator) {
+    out = (await sess.generator.run(feeds))[sess.generator.outputNames[0]];
+  } else {
+    const warped = (await sess.warping!.run(feeds))[sess.warping!.outputNames[0]];
+    out = (await sess.spade!.run({ [sess.spade!.inputNames[0]]: warped }))[sess.spade!.outputNames[0]];
+    warped.dispose();
+  }
   const [, , h, w] = out.dims;
   const d = (await out.getData()) as Float32Array;
   out.dispose();

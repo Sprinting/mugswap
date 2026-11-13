@@ -21,6 +21,12 @@
             <option value="quality">512 px generator (slower)</option>
           </select>
         </label>
+        <label class="hint">Backend
+          <select id="backend">
+            <option value="gpu">GPU generator, CPU for the rest</option>
+            <option value="cpu">All CPU (slow, ~400 MB extra download)</option>
+          </select>
+        </label>
         <label class="hint">Frames per second
           <select id="fps">
             <option>5</option><option selected>10</option><option>15</option><option>30</option>

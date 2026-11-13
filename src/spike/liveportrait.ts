@@ -69,7 +69,7 @@ let selfie: HTMLCanvasElement | null = null; // 256x256 selfie crop
 let clip: Clip | null = null;
 let clipUrl: string | null = null;
 let sessions: lp.Sessions | null = null;
-let sessionsQuality: lp.Quality | null = null;
+let sessionsKey = "";
 
 interface Result { fps: number; frames: (ImageBitmap | null)[]; rects: (Rect | null)[]; oval: (Float32Array | null)[] }
 let result: Result | null = null;
@@ -135,22 +135,27 @@ $("run").onclick = async () => {
   const run = $<HTMLButtonElement>("run");
   run.disabled = true;
   const quality = $<HTMLSelectElement>("quality").value as lp.Quality;
+  const backend = $<HTMLSelectElement>("backend").value as lp.Backend;
   const fps = Number($<HTMLSelectElement>("fps").value);
   const secs = Math.min(Number($<HTMLSelectElement>("secs").value), clip.video.duration);
   const stats: string[] = [];
+  let step = "loading models";
   const say = () => ($("stats").textContent = stats.join("\n"));
   try {
     // Models
-    if (!sessions || sessionsQuality !== quality) {
+    if (!sessions || sessionsKey !== quality + backend) {
+      if (sessions) await lp.release(sessions);
+      sessions = null;
       const t0 = performance.now();
-      sessions = await lp.loadSessions(quality, (l, t, label) => progress(l / t, `${label}: ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB`));
-      sessionsQuality = quality;
+      sessions = await lp.loadSessions(quality, backend, (l, t, label) => progress(l / t, `${label}: ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB`));
+      sessionsKey = quality + backend;
       stats.push(`Models ready in ${((performance.now() - t0) / 1000).toFixed(1)} s (download or cache + GPU init)`);
       say();
     }
     const s = sessions;
 
     // Selfie: appearance volume + its own motion, computed once.
+    step = "selfie encode";
     let t0 = performance.now();
     const selfieTensor = lp.toTensor(selfie);
     const feature = await lp.appearance(s, selfieTensor);
@@ -160,6 +165,7 @@ $("run").onclick = async () => {
     say();
 
     // Clip: face landmarks for the frames we'll use (reuses the M1 tracker).
+    step = "clip face tracking";
     progress(0, "tracking clip face…");
     const trackClipInfo = { ...clip, duration: secs };
     const track = await trackClip(trackClipInfo, (d, t) => progress(d / t, `tracking clip face ${d}/${t}`));
@@ -188,15 +194,18 @@ $("run").onclick = async () => {
       cropTo256(frameCanvas, clip.width, clip.height, r, drive);
 
       let t = performance.now();
+      step = `motion extractor (frame ${i + 1})`;
       const m = await lp.extractMotion(s, lp.toTensor(drive));
       ms.motion += performance.now() - t;
       first ??= m;
 
       t = performance.now();
+      step = `stitching (frame ${i + 1})`;
       const kp = await lp.stitch(s, srcKp, lp.drivingKeypoints(srcMotion, m, first));
       ms.stitch += performance.now() - t;
 
       t = performance.now();
+      step = `generator (frame ${i + 1})`;
       const img = await lp.generate(s, feature, srcKp, kp);
       ms.gen += performance.now() - t;
 
@@ -222,7 +231,12 @@ $("run").onclick = async () => {
     drawOutput();
   } catch (err) {
     console.error(err);
-    stats.push(`Error: ${(err as Error).message}`);
+    stats.push(`Error during ${step}: ${(err as Error).message}`);
+    if (/lost|device/i.test((err as Error).message)) {
+      stats.push("The GPU gave up (device lost). Reload the page before retrying; the models stay cached.");
+      sessions = null;
+      sessionsKey = "";
+    }
     say();
   } finally {
     $("progress").hidden = true;

@@ -429,7 +429,31 @@ function drawOutput() {
   l.globalCompositeOperation = "destination-in";
   l.drawImage(mask, 0, 0);
   ctx.drawImage(layer, 0, 0);
+
+  // Mouth trick (TPSMM can't open a closed-mouth selfie): let the actor's own mouth
+  // interior (teeth, tongue, dark gap) show through, inside her inner-lip outline only.
+  // When her mouth is closed the outline has no area, so nothing shows.
+  if (model() === "tpsmm" && $<HTMLSelectElement>("mouth").value === "actor") {
+    let cx = 0, cy = 0;
+    for (const p of INNER_LIPS) { cx += oval[p * 3] * w; cy += oval[p * 3 + 1] * h; }
+    cx /= INNER_LIPS.length; cy /= INNER_LIPS.length;
+    m.clearRect(0, 0, w, h);
+    m.filter = `blur(${Math.max(1, r.size / 120)}px)`;
+    m.beginPath();
+    INNER_LIPS.forEach((p, k) => (k ? m.lineTo : m.moveTo).call(m, cx + (oval[p * 3] * w - cx) * 1.12, cy + (oval[p * 3 + 1] * h - cy) * 1.12));
+    m.fill();
+    m.filter = "none";
+    l.globalCompositeOperation = "source-over";
+    l.clearRect(0, 0, w, h);
+    l.drawImage(clip.video, 0, 0, w, h);
+    l.globalCompositeOperation = "destination-in";
+    l.drawImage(mask, 0, 0);
+    ctx.drawImage(layer, 0, 0);
+  }
 }
+
+// MediaPipe face mesh inner-lip loop.
+const INNER_LIPS = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
 
 function loop() {
   if (!clip || clip.video.paused) return;
@@ -444,4 +468,5 @@ $("play").onclick = async () => {
   else { clip.video.pause(); $("play").textContent = "Play"; drawOutput(); }
 };
 $<HTMLInputElement>("show-orig").onchange = drawOutput;
-$<HTMLSelectElement>("look").onchange = drawOutput; // mask changes live; colour/sharpen need a re-run
+$<HTMLSelectElement>("look").onchange = drawOutput;
+$<HTMLSelectElement>("mouth").onchange = drawOutput; // live, no re-run needed // mask changes live; colour/sharpen need a re-run

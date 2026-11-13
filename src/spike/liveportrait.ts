@@ -77,7 +77,10 @@ let tpPrecision: tp.Precision = "fp32";
 
 type Model = "tpsmm" | "lp";
 const model = () => $<HTMLSelectElement>("model").value as Model;
-const syncModelUi = () => document.querySelectorAll<HTMLElement>(".lp-only").forEach((el) => (el.hidden = model() !== "lp"));
+const syncModelUi = () => {
+  document.querySelectorAll<HTMLElement>(".lp-only").forEach((el) => (el.hidden = model() !== "lp"));
+  document.querySelectorAll<HTMLElement>(".tp-only").forEach((el) => (el.hidden = model() !== "tpsmm"));
+};
 $<HTMLSelectElement>("model").onchange = syncModelUi;
 syncModelUi();
 
@@ -294,26 +297,49 @@ async function runTpsmm(fps: number, secs: number, stats: string[], say: () => v
   frameCanvas.width = clip.width;
   frameCanvas.height = clip.height;
   const fctx = frameCanvas.getContext("2d")!;
-  let first: Float32Array | null = null;
+  const gain = Number($<HTMLSelectElement>("gain").value);
+  const refMode = $<HTMLSelectElement>("ref").value as "closed" | "first" | "absolute";
+  const cropFrame = async (i: number) => {
+    await seek(clip!.video, (i + 0.5) / fps);
+    fctx.drawImage(clip!.video, 0, 0, clip!.width, clip!.height);
+    cropTo256(frameCanvas, clip!.width, clip!.height, rects[i]!, drive);
+  };
+
+  // Reference frame for "relative" motion. The paper uses the clip's first frame, but if
+  // the actor is already mid-word there, an open mouth becomes the selfie's closed mouth
+  // and every later frame opens it less. Use her most closed-mouth frame instead.
+  // Mouth gap = inner lips (landmarks 13, 14) over face height (10 forehead, 152 chin).
+  let refIdx = rects.findIndex(Boolean);
+  if (refMode === "closed") {
+    let best = Infinity;
+    for (let i = 0; i < count; i++) {
+      const p = lmAt(i);
+      if (!p || !rects[i]) continue;
+      const gap = Math.hypot(p[13 * 3] - p[14 * 3], p[13 * 3 + 1] - p[14 * 3 + 1]) / Math.hypot(p[10 * 3] - p[152 * 3], p[10 * 3 + 1] - p[152 * 3 + 1]);
+      if (gap < best) { best = gap; refIdx = i; }
+    }
+  }
+  let ref: Float32Array | null = null;
+  if (refIdx >= 0 && refMode !== "absolute") {
+    await cropFrame(refIdx);
+    ref = await tp.keypoints(s, tp.toTensor(drive));
+  }
   const ms = { kp: 0, gen: 0 };
   t0 = performance.now();
   try {
     for (let i = 0; i < count; i++) {
       const r = rects[i];
       if (!r) { frames.push(null); continue; }
-      await seek(clip.video, (i + 0.5) / fps);
-      fctx.drawImage(clip.video, 0, 0, clip.width, clip.height);
-      cropTo256(frameCanvas, clip.width, clip.height, r, drive);
+      await cropFrame(i);
 
       let t = performance.now();
       setStep(`keypoints (frame ${i + 1})`);
       const kp = await tp.keypoints(s, tp.toTensor(drive));
       ms.kp += performance.now() - t;
-      first ??= kp;
 
       t = performance.now();
       setStep(`generator (frame ${i + 1})`);
-      const img = await tp.generate(s, src, tp.relativeKeypoints(src.kp, kp, first));
+      const img = await tp.generate(s, src, ref ? tp.relativeKeypoints(src.kp, kp, ref, gain) : kp);
       ms.gen += performance.now() - t;
 
       gen.getContext("2d")!.putImageData(img, 0, 0);
@@ -328,6 +354,7 @@ async function runTpsmm(fps: number, secs: number, stats: string[], say: () => v
   const total = performance.now() - t0;
   stats.push(
     `${count} frames (${secs} s at ${fps} fps, 256 px, TPSMM ${tpPrecision}) in ${(total / 1000).toFixed(1)} s`,
+    `  motion: ${refMode === "absolute" ? "absolute" : `relative to frame ${refIdx + 1}, ${gain}× strength`}`,
     `  per frame: keypoints ${(ms.kp / n).toFixed(0)} ms · generator ${(ms.gen / n).toFixed(0)} ms · total incl. seeking ${(total / n).toFixed(0)} ms`,
     `  a 10 s clip at 30 fps would take about ${((total / n) * 300 / 1000).toFixed(0)} s`,
   );

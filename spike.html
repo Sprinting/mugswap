@@ -21,6 +21,21 @@
             <option value="lp">LivePortrait (3D, partly CPU)</option>
           </select>
         </label>
+        <label class="hint tp-only">Expression strength
+          <select id="gain">
+            <option value="1">1× (as in the paper)</option>
+            <option value="1.5" selected>1.5×</option>
+            <option value="2">2×</option>
+            <option value="3">3×</option>
+          </select>
+        </label>
+        <label class="hint tp-only">Motion from
+          <select id="ref">
+            <option value="closed">changes vs her most closed-mouth frame</option>
+            <option value="first">changes vs her first frame (paper default)</option>
+            <option value="absolute">her face directly (copies her face shape)</option>
+          </select>
+        </label>
         <label class="hint lp-only">Quality
           <select id="quality">
             <option value="preview">256 px generator (faster)</option>

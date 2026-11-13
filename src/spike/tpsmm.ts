@@ -155,10 +155,11 @@ function hullArea(kp: Float32Array): number {
 
 /**
  * The repo's "relative" mode: the selfie keeps its own face shape and only the clip's
- * *movement* since its first frame is applied, scaled by relative face size.
+ * *movement* since a reference frame is applied, scaled by relative face size. `gain` > 1
+ * exaggerates the movement (TPSMM tends to under-open mouths).
  */
-export function relativeKeypoints(src: Float32Array, drv: Float32Array, drv0: Float32Array): Float32Array {
-  const scale = Math.sqrt(hullArea(src)) / Math.sqrt(hullArea(drv0));
+export function relativeKeypoints(src: Float32Array, drv: Float32Array, drv0: Float32Array, gain = 1): Float32Array {
+  const scale = (gain * Math.sqrt(hullArea(src))) / Math.sqrt(hullArea(drv0));
   const out = new Float32Array(src.length);
   for (let i = 0; i < src.length; i++) out[i] = src[i] + (drv[i] - drv0[i]) * scale;
   return out;

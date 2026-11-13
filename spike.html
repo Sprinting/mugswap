@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mugswap spike: LivePortrait</title>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>LivePortrait spike</h1>
+      <p class="tag">Test page: animates your selfie with the clip's head motion and expressions, then pastes it back. Models (~330 MB) download from Hugging Face on first run and are cached by the browser.</p>
+    </header>
+
+    <section>
+      <h2><span>0</span> Setup</h2>
+      <div class="row">
+        <label class="hint">Quality
+          <select id="quality">
+            <option value="preview">256 px generator (faster)</option>
+            <option value="quality">512 px generator (slower)</option>
+          </select>
+        </label>
+        <label class="hint">Frames per second
+          <select id="fps">
+            <option>5</option><option selected>10</option><option>15</option><option>30</option>
+          </select>
+        </label>
+        <label class="hint">Seconds
+          <select id="secs">
+            <option>2</option><option selected>4</option><option>6</option><option>10</option>
+          </select>
+        </label>
+      </div>
+      <p id="env" class="msg"></p>
+    </section>
+
+    <section>
+      <h2><span>1</span> Selfie</h2>
+      <label class="btn">Upload photo<input id="selfie-file" type="file" accept="image/*" hidden /></label>
+      <div class="row"><canvas id="selfie-crop" width="256" height="256" hidden></canvas></div>
+      <p id="selfie-msg" class="msg"></p>
+    </section>
+
+    <section>
+      <h2><span>2</span> Clip</h2>
+      <label class="btn">Upload video<input id="clip-file" type="file" accept="video/*" hidden /></label>
+      <p id="clip-msg" class="msg"></p>
+    </section>
+
+    <section>
+      <h2><span>3</span> Run</h2>
+      <button id="run" class="btn" disabled>Animate</button>
+      <div id="progress" hidden><div id="bar"></div><span id="progress-text"></span></div>
+      <div class="row">
+        <canvas id="out" hidden></canvas>
+      </div>
+      <div class="row">
+        <canvas id="crop-drive" width="256" height="256" hidden></canvas>
+        <canvas id="crop-gen" width="256" height="256" hidden></canvas>
+      </div>
+      <div id="player" class="row" hidden>
+        <button id="play" class="btn ghost">Play</button>
+        <label class="hint"><input id="show-orig" type="checkbox" /> show original</label>
+      </div>
+      <pre id="stats" class="msg"></pre>
+    </section>
+  </main>
+  <script type="module" src="/src/spike/liveportrait.ts"></script>
+</body>
+</html>

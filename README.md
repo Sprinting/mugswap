@@ -26,3 +26,9 @@ are served from our own origin, so nothing is fetched from or sent to third part
 - [ ] M3: full clip warp with live preview
 - [ ] M4: feathering, color match, mouth cutout, yaw fade
 - [ ] M5: WebM export with audio, watermark, demo clips, Worker deploy
+
+## LivePortrait spike (branch `spike/liveportrait`)
+
+`npm run dev`, then open http://localhost:5173/spike.html in desktop Chrome (needs WebGPU).
+Pick a selfie and a clip, press Animate. It downloads ~330 MB of ONNX models from Hugging Face
+on first run (cached afterwards) and reports per-frame timings. Code in `src/spike/`.

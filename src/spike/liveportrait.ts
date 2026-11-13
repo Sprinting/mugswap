@@ -8,6 +8,7 @@ import { loadClip, trackClip, type Clip } from "../media/clip";
 import { selfieFromFile } from "../media/selfie";
 import * as lp from "./lp";
 import * as tp from "./tpsmm";
+import * as comp from "./composite";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const msg = (id: string, text: string, error = false) => {
@@ -324,12 +325,15 @@ async function runTpsmm(fps: number, secs: number, stats: string[], say: () => v
     await cropFrame(refIdx);
     ref = await tp.keypoints(s, tp.toTensor(drive));
   }
+  const raw: (ImageData | null)[] = new Array(count).fill(null);
+  const genStats: (comp.Stats | null)[] = new Array(count).fill(null);
+  const clipStats: (comp.Stats | null)[] = new Array(count).fill(null);
   const ms = { kp: 0, gen: 0 };
   t0 = performance.now();
   try {
     for (let i = 0; i < count; i++) {
       const r = rects[i];
-      if (!r) { frames.push(null); continue; }
+      if (!r) continue;
       await cropFrame(i);
 
       let t = performance.now();
@@ -343,17 +347,33 @@ async function runTpsmm(fps: number, secs: number, stats: string[], say: () => v
       ms.gen += performance.now() - t;
 
       gen.getContext("2d")!.putImageData(img, 0, 0);
-      frames.push(await createImageBitmap(img));
+      raw[i] = img;
+      genStats[i] = comp.faceStats(img.data);
+      clipStats[i] = comp.faceStats(drive.getContext("2d")!.getImageData(0, 0, 256, 256).data);
       const per = (performance.now() - t0) / (i + 1);
       progress((i + 1) / count, `frame ${i + 1}/${count} · ${per.toFixed(0)} ms/frame`);
     }
   } finally {
     tp.disposeSource(src);
   }
-  const n = frames.filter(Boolean).length || 1;
   const total = performance.now() - t0;
+
+  // Compositing: colour-match to the clip's lighting, upscale to paste size, sharpen.
+  setStep("compositing");
+  const look = $<HTMLSelectElement>("look").value;
+  const tc = performance.now();
+  const gS = comp.smoothStats(genStats), cS = comp.smoothStats(clipStats);
+  for (let i = 0; i < count; i++) {
+    const img = raw[i], r = rects[i];
+    if (!img || !r) { frames.push(null); continue; }
+    if (look !== "raw") comp.colorMatch(img, gS[i]!, cS[i]!, 0.85);
+    frames.push(look === "raw" ? await createImageBitmap(img) : await comp.upscaleSharpen(img, r.size));
+    progress((i + 1) / count, `compositing ${i + 1}/${count}`);
+  }
+  const compMs = performance.now() - tc;
+  const n = frames.filter(Boolean).length || 1;
   stats.push(
-    `${count} frames (${secs} s at ${fps} fps, 256 px, TPSMM ${tpPrecision}) in ${(total / 1000).toFixed(1)} s`,
+    `${count} frames (${secs} s at ${fps} fps, 256 px, TPSMM ${tpPrecision}) in ${(total / 1000).toFixed(1)} s + ${(compMs / 1000).toFixed(1)} s compositing`,
     `  motion: ${refMode === "absolute" ? "absolute" : `relative to frame ${refIdx + 1}, ${gain}× strength`}`,
     `  per frame: keypoints ${(ms.kp / n).toFixed(0)} ms · generator ${(ms.gen / n).toFixed(0)} ms · total incl. seeking ${(total / n).toFixed(0)} ms`,
     `  a 10 s clip at 30 fps would take about ${((total / n) * 300 / 1000).toFixed(0)} s`,
@@ -383,12 +403,22 @@ function drawOutput() {
   const frame = result.frames[i], r = result.rects[i], oval = result.oval[i];
   if (!frame || !r || !oval || $<HTMLInputElement>("show-orig").checked) return;
 
-  // Mask: the clip's face oval, blurred for a soft edge.
+  // Mask: the clip's face oval, blurred for a soft edge. With the "cameos" look the oval
+  // is shrunk toward its centre (more at the top, so the clip's hairline stays) and
+  // feathered wider, so the seam falls on skin where colours already match.
+  const soft = $<HTMLSelectElement>("look").value !== "raw";
   const m = mask.getContext("2d")!;
   m.clearRect(0, 0, w, h);
-  m.filter = `blur(${Math.max(2, r.size / 40)}px)`;
+  m.filter = `blur(${Math.max(2, r.size / (soft ? 22 : 40))}px)`;
+  let cx = 0, cy = 0;
+  for (const p of OVAL) { cx += oval[p * 3] * w; cy += oval[p * 3 + 1] * h; }
+  cx /= OVAL.length; cy /= OVAL.length;
   m.beginPath();
-  OVAL.forEach((p, k) => (k ? m.lineTo : m.moveTo).call(m, oval[p * 3] * w, oval[p * 3 + 1] * h));
+  OVAL.forEach((p, k) => {
+    const x = oval[p * 3] * w, y = oval[p * 3 + 1] * h;
+    const sx = soft ? 0.9 : 1, sy = soft ? (y < cy ? 0.84 : 0.93) : 1;
+    (k ? m.lineTo : m.moveTo).call(m, cx + (x - cx) * sx, cy + (y - cy) * sy);
+  });
   m.fill();
   m.filter = "none";
 
@@ -414,3 +444,4 @@ $("play").onclick = async () => {
   else { clip.video.pause(); $("play").textContent = "Play"; drawOutput(); }
 };
 $<HTMLInputElement>("show-orig").onchange = drawOutput;
+$<HTMLSelectElement>("look").onchange = drawOutput; // mask changes live; colour/sharpen need a re-run

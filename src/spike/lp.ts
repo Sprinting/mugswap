@@ -17,8 +17,9 @@ import ortWasmMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?u
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 
 // Threads need cross-origin isolation (COOP/COEP headers, set in vite.config.ts).
-// Override with ?threads=N in the page URL (?threads=1 = single-threaded, the most compatible).
-const wanted = Number(new URLSearchParams(location.search).get("threads")) || Math.min(8, navigator.hardwareConcurrency || 4);
+// Single-threaded by default: with 8 threads, session creation hung on an M-series Mac
+// in Chrome (not reproducible in headless Chrome). Try more with ?threads=N in the URL.
+const wanted = Number(new URLSearchParams(location.search).get("threads")) || 1;
 ort.env.wasm.numThreads = crossOriginIsolated ? wanted : 1;
 export const wasmThreads = ort.env.wasm.numThreads;
 ort.env.wasm.wasmPaths = { mjs: ortWasmMjsUrl, wasm: ortWasmUrl };

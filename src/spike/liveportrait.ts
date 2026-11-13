@@ -1,4 +1,5 @@
-// SPIKE: does LivePortrait-in-the-browser look and run well enough to A/B against the warp?
+// SPIKE: does an ML face animator (TPSMM or LivePortrait) look and run well enough in the
+// browser to A/B against the warp?
 // Run with `npm run dev`, then open http://localhost:5173/spike.html in desktop Chrome.
 import "../style.css";
 import { FaceLandmarker } from "@mediapipe/tasks-vision";
@@ -6,6 +7,7 @@ import { detectImage } from "../face/landmarker";
 import { loadClip, trackClip, type Clip } from "../media/clip";
 import { selfieFromFile } from "../media/selfie";
 import * as lp from "./lp";
+import * as tp from "./tpsmm";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const msg = (id: string, text: string, error = false) => {
@@ -17,7 +19,7 @@ const msg = (id: string, text: string, error = false) => {
 
 interface Rect { x: number; y: number; size: number }
 
-// LivePortrait was trained on loose head crops (the face is roughly half the
+// LivePortrait and TPSMM (VoxCeleb) were trained on loose head crops (the face is roughly half the
 // crop). We build the same crop from MediaPipe's landmark bounding box.
 const CROP_SCALE = 1.9; // crop side / face-box side
 const CROP_SHIFT_UP = 0.1; // move the crop up by this fraction of its side, to include hair
@@ -70,6 +72,14 @@ let clip: Clip | null = null;
 let clipUrl: string | null = null;
 let sessions: lp.Sessions | null = null;
 let sessionsKey = "";
+let tpSessions: tp.Sessions | null = null;
+let tpPrecision: tp.Precision = "fp32";
+
+type Model = "tpsmm" | "lp";
+const model = () => $<HTMLSelectElement>("model").value as Model;
+const syncModelUi = () => document.querySelectorAll<HTMLElement>(".lp-only").forEach((el) => (el.hidden = model() !== "lp"));
+$<HTMLSelectElement>("model").onchange = syncModelUi;
+syncModelUi();
 
 interface Result { fps: number; frames: (ImageBitmap | null)[]; rects: (Rect | null)[]; oval: (Float32Array | null)[] }
 let result: Result | null = null;
@@ -96,7 +106,7 @@ $<HTMLInputElement>("selfie-file").onchange = async (e) => {
     cropTo256(img, img.width, img.height, cropRect(face.points, img.width, img.height), view);
     view.hidden = false;
     selfie = view;
-    msg("selfie-msg", "This 256 px crop is what LivePortrait sees.");
+    msg("selfie-msg", "This 256 px crop is what the model sees.");
     updateRun();
   } catch (err) {
     msg("selfie-msg", (err as Error).message, true);
@@ -142,6 +152,10 @@ $("run").onclick = async () => {
   let step = "loading models";
   const say = () => ($("stats").textContent = stats.join("\n"));
   try {
+    if (model() === "tpsmm") {
+      await runTpsmm(fps, secs, stats, say, (st) => (step = st));
+      return;
+    }
     // Models
     if (!sessions || sessionsKey !== quality + backend) {
       if (sessions) await lp.release(sessions);
@@ -236,6 +250,7 @@ $("run").onclick = async () => {
       stats.push("The GPU gave up (device lost). Reload the page before retrying; the models stay cached.");
       sessions = null;
       sessionsKey = "";
+      tpSessions = null;
     }
     say();
   } finally {
@@ -243,6 +258,86 @@ $("run").onclick = async () => {
     run.disabled = false;
   }
 };
+
+/** Same flow as LivePortrait below: selfie once, then per frame crop -> keypoints -> generate. */
+async function runTpsmm(fps: number, secs: number, stats: string[], say: () => void, setStep: (s: string) => void) {
+  if (!selfie || !clip) return;
+  if (!tpSessions) {
+    setStep("loading models");
+    tpPrecision = await tp.pickPrecision();
+    const t0 = performance.now();
+    tpSessions = await tp.loadSessions(tpPrecision, (l, t, label) => progress(l / t, `${label}: ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB`));
+    stats.push(`TPSMM (${tpPrecision}) ready in ${((performance.now() - t0) / 1000).toFixed(1)} s (download + GPU init)`);
+    say();
+  }
+  const s = tpSessions;
+
+  setStep("selfie encode");
+  let t0 = performance.now();
+  const src = await tp.encodeSource(s, tp.toTensor(selfie));
+  stats.push(`Selfie encode: ${(performance.now() - t0).toFixed(0)} ms`);
+  say();
+
+  setStep("clip face tracking");
+  progress(0, "tracking clip face…");
+  const track = await trackClip({ ...clip, duration: secs }, (d, t) => progress(d / t, `tracking clip face ${d}/${t}`));
+  const count = Math.max(1, Math.floor(secs * fps));
+  const lmAt = (i: number) => track.landmarks[Math.min(track.frameCount - 1, Math.floor(((i + 0.5) / fps) * track.fps))];
+  const rects = smooth(Array.from({ length: count }, (_, i) => { const p = lmAt(i); return p ? cropRect(p, clip!.width, clip!.height) : null; }));
+
+  const frames: (ImageBitmap | null)[] = [];
+  const drive = $<HTMLCanvasElement>("crop-drive");
+  const gen = $<HTMLCanvasElement>("crop-gen");
+  gen.width = gen.height = 256;
+  drive.hidden = gen.hidden = false;
+  const frameCanvas = document.createElement("canvas");
+  frameCanvas.width = clip.width;
+  frameCanvas.height = clip.height;
+  const fctx = frameCanvas.getContext("2d")!;
+  let first: Float32Array | null = null;
+  const ms = { kp: 0, gen: 0 };
+  t0 = performance.now();
+  try {
+    for (let i = 0; i < count; i++) {
+      const r = rects[i];
+      if (!r) { frames.push(null); continue; }
+      await seek(clip.video, (i + 0.5) / fps);
+      fctx.drawImage(clip.video, 0, 0, clip.width, clip.height);
+      cropTo256(frameCanvas, clip.width, clip.height, r, drive);
+
+      let t = performance.now();
+      setStep(`keypoints (frame ${i + 1})`);
+      const kp = await tp.keypoints(s, tp.toTensor(drive));
+      ms.kp += performance.now() - t;
+      first ??= kp;
+
+      t = performance.now();
+      setStep(`generator (frame ${i + 1})`);
+      const img = await tp.generate(s, src, tp.relativeKeypoints(src.kp, kp, first));
+      ms.gen += performance.now() - t;
+
+      gen.getContext("2d")!.putImageData(img, 0, 0);
+      frames.push(await createImageBitmap(img));
+      const per = (performance.now() - t0) / (i + 1);
+      progress((i + 1) / count, `frame ${i + 1}/${count} · ${per.toFixed(0)} ms/frame`);
+    }
+  } finally {
+    tp.disposeSource(src);
+  }
+  const n = frames.filter(Boolean).length || 1;
+  const total = performance.now() - t0;
+  stats.push(
+    `${count} frames (${secs} s at ${fps} fps, 256 px, TPSMM ${tpPrecision}) in ${(total / 1000).toFixed(1)} s`,
+    `  per frame: keypoints ${(ms.kp / n).toFixed(0)} ms · generator ${(ms.gen / n).toFixed(0)} ms · total incl. seeking ${(total / n).toFixed(0)} ms`,
+    `  a 10 s clip at 30 fps would take about ${((total / n) * 300 / 1000).toFixed(0)} s`,
+  );
+  say();
+  result = { fps, frames, rects, oval: Array.from({ length: count }, (_, i) => lmAt(i)) };
+  $("out").hidden = false;
+  $("player").hidden = false;
+  await seek(clip.video, 0);
+  drawOutput();
+}
 
 // ---------- playback ----------
 

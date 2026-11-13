@@ -3,25 +3,31 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>mugswap spike: LivePortrait</title>
+  <title>mugswap spike: face animation</title>
 </head>
 <body>
   <main>
     <header>
-      <h1>LivePortrait spike</h1>
-      <p class="tag">Test page: animates your selfie with the clip's head motion and expressions, then pastes it back. Models (~330 MB) download from Hugging Face on first run and are cached by the browser.</p>
+      <h1>Face animation spike</h1>
+      <p class="tag">Test page: animates your selfie with the clip's head motion and expressions, then pastes it back. TPSMM models (~150 MB) load from this dev server; LivePortrait models (~330 MB) download from Hugging Face on first run and are cached by the browser.</p>
     </header>
 
     <section>
       <h2><span>0</span> Setup</h2>
       <div class="row">
-        <label class="hint">Quality
+        <label class="hint">Model
+          <select id="model">
+            <option value="tpsmm">TPSMM (2D, all on GPU)</option>
+            <option value="lp">LivePortrait (3D, partly CPU)</option>
+          </select>
+        </label>
+        <label class="hint lp-only">Quality
           <select id="quality">
             <option value="preview">256 px generator (faster)</option>
             <option value="quality">512 px generator (slower)</option>
           </select>
         </label>
-        <label class="hint">Backend
+        <label class="hint lp-only">Backend
           <select id="backend">
             <option value="gpu">GPU generator, CPU for the rest</option>
             <option value="cpu">All CPU (slow, ~400 MB extra download)</option>
